@@ -1,1 +1,83 @@
+node {
+    
+    //--- Getting the upstream build number
+    def manualTrigger = true
+    def upstreamBuild = ""
+    currentBuild.upstreamBuilds?.each {b ->
+        upstreamBuild = "${b.getDisplayName()}"
+        manualTrigger = false
+    }
+    upstreamBuild = upstreamBuild.substring(1)
 
+    //--- Reading current job config ---
+    def job_config = readFile "$JENKINS_HOME/jobs/QEEGT_simple-subject-pipeline-data/builds/$upstreamBuild/fileParameters/data-descriptor.xml"
+    def parser = new XmlParser().parseText(job_config)
+    def job_name = "${parser.attribute("job")}"
+    def build_ID ="${parser.attribute("build")}"
+    def owner_name ="${parser.attribute("name")}"
+    def notif_email ="${parser.attribute("email")}"
+    def subject = "${parser.attribute("Subject")}"
+    
+    //Setting Build description
+    def currentBuildName = "QEEGT-BUILD#$build_ID-$owner_name"
+    currentBuild.displayName = "$currentBuildName"
+    
+    stage('DATA ACQUISITION'){
+        
+        //--- Creating current matlab workspace
+        sh "mkdir $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$currentBuildName"
+        
+        //--- Moving data files to matlab workspace
+        sh "cp -a $JENKINS_HOME/workspace/$JOB_NAME/. $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$currentBuildName"
+        sh "mv $JENKINS_HOME/jobs/QEEGT_simple-subject-pipeline-data/builds/$upstreamBuild/fileParameters/data-descriptor.xml $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$currentBuildName/data"
+        sh "mv $JENKINS_HOME/jobs/QEEGT_simple-subject-pipeline-data/builds/$upstreamBuild/fileParameters/$subject $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$currentBuildName/data"
+        
+        //--- Starting ssh agent on Matlab server ---
+        sshagent(['jenkins-hpc']) {      
+
+            //--- Copying de data file to External_data folder in Matlab Server --- 
+            sh 'ssh -o StrictHostKeyChecking=no jenkins@192.168.100.100'
+            sh "scp -r $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$currentBuildName jenkins@192.168.100.100:/home/software_install_dir/MATLAB/R2018a"
+        } 
+    }
+    
+    stage('DATA PROCESSING (QEEGT)'){
+        
+        //--- Starting ssh agent on Matlab Server ---
+        sshagent(['jenkins-hpc']) { 
+        
+            /*--- Goal: Execute the matlab command, package and copy the results in the FTP server and clean the workspace.  
+            @file: jenkins.sh
+            @Parameter{
+                $1-action [run, delivery]
+                $2-Name of the person who run the task ($owner_name)
+                $3-Worksmace name ($currentBuildName)
+            } ---*/           
+            
+            echo "--- Run Matlab command ---"
+            sh 'ssh -o StrictHostKeyChecking=no jenkins@192.168.100.100'
+            sh "ssh jenkins@192.168.100.100 chmod +x /home/software_install_dir/MATLAB/R2018a/$currentBuildName/jenkins.sh"
+            sh "ssh jenkins@192.168.100.100 /home/software_install_dir/MATLAB/R2018a/$currentBuildName/jenkins.sh run $owner_name $currentBuildName"    
+        }
+    }
+    
+    stage('DATA DELIVERY'){
+        
+        //--- Starting ssh agent on Matlab Server ---
+        sshagent(['jenkins-hpc']) { 
+        
+            /*--- Goal: Execute the matlab command, package and copy the results in the FTP server and clean the workspace.  
+            @file: jenkins.sh
+            @Parameter{
+                $1-action [run, delivery]
+                $2-Name of the person who run the task ($owner_name)
+                $3-Worksmace name ($currentBuildName)
+            } ---*/         
+            
+            echo "--- Tar and copy files result to HPC SAN ---"
+            sh 'ssh -o StrictHostKeyChecking=no jenkins@192.168.100.100'
+            sh "ssh jenkins@192.168.100.100 /home/software_install_dir/MATLAB/R2018a/$currentBuildName/jenkins.sh delivery $owner_name $currentBuildName" 
+            sh "ssh jenkins@192.168.100.100 /home/software_install_dir/MATLAB/R2018a/$currentBuildName/jenkins.sh clean $owner_name $currentBuildName"    
+        }
+    }
+}
