@@ -1,0 +1,90 @@
+node {
+
+    /** QEEGT multiple subject proyect Jenkinsfile
+        @Project: QEEGT
+        @Author:  MSc. Denys Buedo Hidalgo.
+                  Joint China-Cuba Laboratory for Frointier Research in Traslational Neurotechnology
+                  Universidad de las Ciencias Informáticas (UCI), La Habana, Cuba.
+        @Date: 22/03/2018
+    */
+       
+    /** Loading initial data */
+    
+    //Setting Build description
+    def currentBuildName = "QEEGT-BUILD#$BUILD_ID-$Name"
+    def currentWorkspace = "QEEGT-BUILD#$BUILD_ID-$Name"
+    currentBuild.displayName = "$currentBuildName"
+    
+    /** DATA ACQUISITION STAGE  
+        @Action: Create the current matlab workspace by subject.
+                 Create data-descriptor xml  
+    */ 
+    stage('DATA ACQUISITION'){
+        
+        //--- Starting ssh agent on Matlab server ---
+        sshagent(['jenkins-hpc']) {      
+            
+            //--- Generate the subject list and subject data files
+            sh 'ssh -o StrictHostKeyChecking=no jenkins@192.168.100.100'
+            sh "scp $JENKINS_HOME/workspace/$JOB_NAME/jenkins.sh jenkins@192.168.100.100:$Dataset"
+            sh "ssh jenkins@192.168.100.100 chmod +x $Dataset/jenkins.sh"
+            sh "ssh jenkins@192.168.100.100 $Dataset/jenkins.sh get_list_subject $Name $currentBuildName $Dataset"
+            sh "scp jenkins@192.168.100.100:$Dataset/subjects_list.txt $JENKINS_HOME/workspace/$JOB_NAME" 
+            sh "ssh jenkins@192.168.100.100 rm $Dataset/subjects_list.txt"
+        }
+    }
+    
+    /** DATA PROCESSING STAGE  
+        @Action: Create the current matlab workspace by subject.
+                 Create data-descriptor xml  
+    */ 
+    stage('DATA PROCESSING (QEEGT)'){
+        
+        //--- Creating subjects file
+        File subjects_list = new File("$JENKINS_HOME/workspace/$JOB_NAME/subjects_list.txt")
+        
+        //--- Getting txt subjects lines 
+        def subjects_name = subjects_list.readLines() 
+        
+        //--- Removing subjects list txt file
+        sh "rm $JENKINS_HOME/workspace/$JOB_NAME/subjects_list.txt"
+        
+        sshagent(['jenkins-hpc']) {
+        
+            //--- Iterating through the subjects names ---/
+            for (iterator_subjects in subjects_name) {
+            
+                //--- Getting current subject's folder ---/              
+                def current_subject_ext = "${iterator_subjects}" 
+                def current_subject_no_ext = current_subject_ext.substring(0, current_subject_ext.indexOf('.'))
+                
+                //--- Setting current workspaces name ---/
+                current_workspace_name = "$currentWorkspace-$current_subject_no_ext"
+                def absolute_current_workspace_local_path = "$JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$current_workspace_name/"
+                
+                //--- Creating current workspaces folder
+                sh "mkdir $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$current_workspace_name"
+                sh "mkdir $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$current_workspace_name/data"
+                sh "mkdir $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$current_workspace_name/results"
+                
+                //--- Copying QEEGT workspace to current workspaces folder
+                sh "cp -a $JENKINS_HOME/workspace/$JOB_NAME/. $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$current_workspace_name"
+                
+                //--- Creating xml data-descriptor file (Get task info from global var) ---/
+                sh "chmod +x $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$current_workspace_name/jenkins.sh"
+                sh "$JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$current_workspace_name/jenkins.sh create_xml-data $Name $current_workspace_name $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$current_workspace_name/data $Dataset/$current_subject_ext"
+                
+                //--- Copying current workspace from Jenkins Server to Matlab Server
+                sh "scp -r $JENKINS_HOME/jobs/$JOB_NAME/builds/$BUILD_ID/$current_workspace_name jenkins@192.168.100.100:/home/software_install_dir/MATLAB/R2018a"
+                
+                //--- Running BC-Vareta_simple-subject-job
+                build job: 'QEEGT_simple-subject-job', parameters: [string(name: 'Name', value: "${Name}"), string(name: 'Project', value: "${current_workspace_name}"), string(name: 'Subject', value: "${current_subject_ext}")], wait: false
+                
+                //--- Setting current workspace
+                current_workspace_name = "$currentBuildName"
+            }
+            //--- Removing jenkins.sh file from dateset
+            sh "ssh jenkins@192.168.100.100 rm $Dataset/jenkins.sh"
+        }        
+    }    
+}
